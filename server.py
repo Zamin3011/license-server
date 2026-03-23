@@ -5,7 +5,7 @@ from datetime import datetime
 app = FastAPI()
 
 licenses = {
-    "ZAMIN-TEST-124": {
+    "ZAMIN-TEST-123": {
         "expiry": "2026-12-31",
         "device_id": None
     }
