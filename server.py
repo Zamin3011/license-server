@@ -132,6 +132,38 @@ def reset_device(req: AdminRequest):
 
     return {"status": "reset"}
 
+
+@app.get("/admin/stats")
+def get_stats(password: str):
+
+    if not check_admin(password):
+        return {"error": "unauthorized"}
+
+    db = load_db()
+
+    total = len(db)
+    active = 0
+    expired = 0
+
+    now = datetime.now()
+
+    for key, lic in db.items():
+        try:
+            expiry = datetime.strptime(lic["expiry"], "%Y-%m-%d")
+            if expiry >= now:
+                active += 1
+            else:
+                expired += 1
+        except:
+            expired += 1
+
+    return {
+        "total": total,
+        "active": active,
+        "expired": expired
+    }
+
+
 # =========================
 # ADMIN UI PANEL
 # =========================
@@ -154,6 +186,26 @@ def admin_panel():
 
             h1 {
                 margin-bottom: 20px;
+            }
+
+            .stats {
+                display: flex;
+                gap: 15px;
+                margin-bottom: 20px;
+            }
+
+            .stat-box {
+                flex: 1;
+                background: #1e293b;
+                padding: 20px;
+                border-radius: 12px;
+                text-align: center;
+                box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+            }
+
+            .stat-box h2 {
+                margin: 0;
+                font-size: 28px;
             }
 
             .card {
@@ -180,7 +232,6 @@ def admin_panel():
                 background: #3b82f6;
                 color: white;
                 cursor: pointer;
-                transition: 0.2s;
             }
 
             button:hover {
@@ -191,16 +242,8 @@ def admin_panel():
                 background: #ef4444;
             }
 
-            .danger:hover {
-                background: #dc2626;
-            }
-
             .secondary {
                 background: #64748b;
-            }
-
-            .secondary:hover {
-                background: #475569;
             }
 
             table {
@@ -221,16 +264,27 @@ def admin_panel():
             tr {
                 border-bottom: 1px solid #334155;
             }
-
-            .actions button {
-                margin-right: 5px;
-            }
         </style>
     </head>
 
     <body>
 
-        <h1>🔐 License Admin Dashboard</h1>
+        <h1>🔐 License Dashboard</h1>
+
+        <div class="stats">
+            <div class="stat-box">
+                <h2 id="total">0</h2>
+                <p>Total Licenses</p>
+            </div>
+            <div class="stat-box">
+                <h2 id="active">0</h2>
+                <p>Active</p>
+            </div>
+            <div class="stat-box">
+                <h2 id="expired">0</h2>
+                <p>Expired</p>
+            </div>
+        </div>
 
         <div class="card">
             <h3>Create License</h3>
@@ -256,6 +310,17 @@ def admin_panel():
 
         <script>
 
+        async function loadStats() {
+            const password = document.getElementById("password").value;
+
+            const res = await fetch("/admin/stats?password=" + password);
+            const data = await res.json();
+
+            document.getElementById("total").innerText = data.total || 0;
+            document.getElementById("active").innerText = data.active || 0;
+            document.getElementById("expired").innerText = data.expired || 0;
+        }
+
         async function createLicense() {
             const password = document.getElementById("password").value;
             const key = document.getElementById("key").value;
@@ -268,6 +333,7 @@ def admin_panel():
             });
 
             loadLicenses();
+            loadStats();
         }
 
         async function loadLicenses() {
@@ -295,7 +361,7 @@ def admin_panel():
                         <td>${key}</td>
                         <td>${lic.expiry}</td>
                         <td>${lic.device_id || "-"}</td>
-                        <td class="actions">
+                        <td>
                             <button class="danger" onclick="deleteLicense('${key}')">Delete</button>
                             <button class="secondary" onclick="resetDevice('${key}')">Reset</button>
                         </td>
@@ -314,6 +380,7 @@ def admin_panel():
             });
 
             loadLicenses();
+            loadStats();
         }
 
         async function resetDevice(key) {
