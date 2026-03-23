@@ -34,6 +34,8 @@ def save_db(data):
 class LicenseRequest(BaseModel):
     license_key: str
     device_id: str
+    device_name: str = "Unknown"
+
 
 class AdminRequest(BaseModel):
     password: str
@@ -60,13 +62,27 @@ def validate(data: LicenseRequest):
     # device lock
     if lic.get("device_id") is None:
         lic["device_id"] = data.device_id
+        lic["device_name"] = data.device_name
         db[data.license_key] = lic
         save_db(db)
 
-    elif lic.get("device_id") != data.device_id:
-        return {"valid": False, "reason": "device_mismatch"}
 
-    return {"valid": True}
+    elif lic.get("device_id") != data.device_id:
+
+        return {
+
+            "valid": False,
+
+            "reason": "device_mismatch",
+
+            "device_name": lic.get("device_name", "Unknown")
+
+        }
+
+    return {
+        "valid": True,
+        "expiry": lic["expiry"]
+    }
 
 # =========================
 # ADMIN AUTH
@@ -128,6 +144,7 @@ def reset_device(req: AdminRequest):
 
     if req.key in db:
         db[req.key]["device_id"] = None
+        db[req.key]["device_name"] = None
         save_db(db)
 
     return {"status": "reset"}
@@ -302,7 +319,7 @@ def admin_panel():
                 <tr>
                     <th>Key</th>
                     <th>Expiry</th>
-                    <th>Device</th>
+                    <th>Device Name</th>
                     <th>Actions</th>
                 </tr>
             </table>
@@ -360,7 +377,7 @@ def admin_panel():
                     <tr>
                         <td>${key}</td>
                         <td>${lic.expiry}</td>
-                        <td>${lic.device_id || "-"}</td>
+                        <td>${lic.device_name || "-"}</td>
                         <td>
                             <button class="danger" onclick="deleteLicense('${key}')">Delete</button>
                             <button class="secondary" onclick="resetDevice('${key}')">Reset</button>
