@@ -138,41 +138,121 @@ def reset_device(req: AdminRequest):
 
 @app.get("/admin", response_class=HTMLResponse)
 def admin_panel():
-
     return """
     <html>
     <head>
         <title>License Admin Panel</title>
+
         <style>
-            body { font-family: Arial; background:#111; color:white; padding:20px; }
-            input, button { padding:8px; margin:5px; }
-            table { border-collapse: collapse; width:100%; margin-top:20px; }
-            th, td { border:1px solid #444; padding:8px; text-align:left; }
-            th { background:#222; }
-            button { cursor:pointer; }
+            body {
+                font-family: 'Segoe UI', sans-serif;
+                background: #0f172a;
+                color: #e2e8f0;
+                margin: 0;
+                padding: 20px;
+            }
+
+            h1 {
+                margin-bottom: 20px;
+            }
+
+            .card {
+                background: #1e293b;
+                padding: 20px;
+                border-radius: 12px;
+                margin-bottom: 20px;
+                box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+            }
+
+            input {
+                padding: 10px;
+                border-radius: 8px;
+                border: none;
+                margin-right: 10px;
+                background: #334155;
+                color: white;
+            }
+
+            button {
+                padding: 10px 15px;
+                border-radius: 8px;
+                border: none;
+                background: #3b82f6;
+                color: white;
+                cursor: pointer;
+                transition: 0.2s;
+            }
+
+            button:hover {
+                background: #2563eb;
+            }
+
+            .danger {
+                background: #ef4444;
+            }
+
+            .danger:hover {
+                background: #dc2626;
+            }
+
+            .secondary {
+                background: #64748b;
+            }
+
+            .secondary:hover {
+                background: #475569;
+            }
+
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 10px;
+            }
+
+            th, td {
+                padding: 12px;
+                text-align: left;
+            }
+
+            th {
+                background: #334155;
+            }
+
+            tr {
+                border-bottom: 1px solid #334155;
+            }
+
+            .actions button {
+                margin-right: 5px;
+            }
         </style>
     </head>
+
     <body>
 
-        <h2>🔐 License Admin Panel</h2>
+        <h1>🔐 License Admin Dashboard</h1>
 
-        <h3>Create License</h3>
-        <input id="password" placeholder="Admin Password">
-        <input id="key" placeholder="License Key">
-        <input id="expiry" placeholder="YYYY-MM-DD">
-        <button onclick="createLicense()">Create</button>
+        <div class="card">
+            <h3>Create License</h3>
+            <input id="password" placeholder="Admin Password">
+            <input id="key" placeholder="License Key">
+            <input id="expiry" placeholder="YYYY-MM-DD">
+            <button onclick="createLicense()">Create</button>
+        </div>
 
-        <h3>All Licenses</h3>
-        <button onclick="loadLicenses()">Refresh</button>
+        <div class="card">
+            <h3>All Licenses</h3>
+            <button class="secondary" onclick="loadLicenses()">Refresh</button>
 
-        <table id="table">
-            <tr>
-                <th>Key</th>
-                <th>Expiry</th>
-                <th>Device</th>
-                <th>Actions</th>
-            </tr>
-        </table>
+            <table id="table">
+                <tr>
+                    <th>Key</th>
+                    <th>Expiry</th>
+                    <th>Device</th>
+                    <th>Actions</th>
+                </tr>
+            </table>
+        </div>
 
         <script>
 
@@ -197,6 +277,7 @@ def admin_panel():
             const data = await res.json();
 
             const table = document.getElementById("table");
+
             table.innerHTML = `
                 <tr>
                     <th>Key</th>
@@ -214,9 +295,9 @@ def admin_panel():
                         <td>${key}</td>
                         <td>${lic.expiry}</td>
                         <td>${lic.device_id || "-"}</td>
-                        <td>
-                            <button onclick="deleteLicense('${key}')">Delete</button>
-                            <button onclick="resetDevice('${key}')">Reset</button>
+                        <td class="actions">
+                            <button class="danger" onclick="deleteLicense('${key}')">Delete</button>
+                            <button class="secondary" onclick="resetDevice('${key}')">Reset</button>
                         </td>
                     </tr>
                 `;
