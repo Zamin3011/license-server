@@ -1,31 +1,50 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 from datetime import datetime
-import json
-import os
 from fastapi.responses import HTMLResponse
+import firebase_admin
+from firebase_admin import credentials, firestore
+import os
+import json
 
 app = FastAPI()
 
 ADMIN_PASSWORD = "zamin123"  # change this
-DB_FILE = "licenses.json"
 
 # =========================
-# DATABASE FUNCTIONS
+# FIREBASE INIT
 # =========================
 
-def load_db():
-    if not os.path.exists(DB_FILE):
-        return {}
-    try:
-        with open(DB_FILE, "r") as f:
-            return json.load(f)
-    except:
-        return {}
+firebase_key_json = os.environ.get("FIREBASE_KEY")
 
-def save_db(data):
-    with open(DB_FILE, "w") as f:
-        json.dump(data, f, indent=4)
+if not firebase_key_json:
+    raise Exception("FIREBASE_KEY not found in environment variables")
+
+cred = credentials.Certificate(json.loads(firebase_key_json))
+firebase_admin.initialize_app(cred)
+
+db = firestore.client()
+
+# =========================
+# FIREBASE FUNCTIONS
+# =========================
+
+def get_license(key):
+    doc = db.collection("licenses").document(key).get()
+    return doc.to_dict() if doc.exists else None
+
+
+def save_license(key, data):
+    db.collection("licenses").document(key).set(data)
+
+
+def delete_license_db(key):
+    db.collection("licenses").document(key).delete()
+
+
+def get_all_licenses():
+    docs = db.collection("licenses").stream()
+    return {doc.id: doc.to_dict() for doc in docs}
 
 # =========================
 # MODELS
@@ -49,8 +68,7 @@ class AdminRequest(BaseModel):
 @app.post("/api/validate")
 def validate(data: LicenseRequest):
 
-    db = load_db()
-    lic = db.get(data.license_key)
+    lic = get_license(data.license_key)
 
     if not lic:
         return {"valid": False}
@@ -63,20 +81,13 @@ def validate(data: LicenseRequest):
     if lic.get("device_id") is None:
         lic["device_id"] = data.device_id
         lic["device_name"] = data.device_name
-        db[data.license_key] = lic
-        save_db(db)
-
+        save_license(data.license_key, lic)
 
     elif lic.get("device_id") != data.device_id:
-
         return {
-
             "valid": False,
-
             "reason": "device_mismatch",
-
             "device_name": lic.get("device_name", "Unknown")
-
         }
 
     return {
@@ -92,7 +103,7 @@ def check_admin(password):
     return password == ADMIN_PASSWORD
 
 # =========================
-# ADMIN APIs (FIXED)
+# ADMIN APIs
 # =========================
 
 @app.post("/admin/create")
@@ -101,16 +112,14 @@ def create_license(req: AdminRequest):
     if not check_admin(req.password):
         return {"error": "unauthorized"}
 
-    db = load_db()
-
-    db[req.key] = {
+    save_license(req.key, {
         "expiry": req.expiry,
-        "device_id": None
-    }
-
-    save_db(db)
+        "device_id": None,
+        "device_name": None
+    })
 
     return {"status": "created"}
+
 
 @app.get("/admin/list")
 def list_licenses(password: str):
@@ -118,7 +127,8 @@ def list_licenses(password: str):
     if not check_admin(password):
         return {"error": "unauthorized"}
 
-    return load_db()
+    return get_all_licenses()
+
 
 @app.post("/admin/delete")
 def delete_license(req: AdminRequest):
@@ -126,13 +136,10 @@ def delete_license(req: AdminRequest):
     if not check_admin(req.password):
         return {"error": "unauthorized"}
 
-    db = load_db()
-
-    if req.key in db:
-        del db[req.key]
-        save_db(db)
+    delete_license_db(req.key)
 
     return {"status": "deleted"}
+
 
 @app.post("/admin/reset-device")
 def reset_device(req: AdminRequest):
@@ -140,12 +147,12 @@ def reset_device(req: AdminRequest):
     if not check_admin(req.password):
         return {"error": "unauthorized"}
 
-    db = load_db()
+    lic = get_license(req.key)
 
-    if req.key in db:
-        db[req.key]["device_id"] = None
-        db[req.key]["device_name"] = None
-        save_db(db)
+    if lic:
+        lic["device_id"] = None
+        lic["device_name"] = None
+        save_license(req.key, lic)
 
     return {"status": "reset"}
 
@@ -156,15 +163,15 @@ def get_stats(password: str):
     if not check_admin(password):
         return {"error": "unauthorized"}
 
-    db = load_db()
+    db_data = get_all_licenses()
 
-    total = len(db)
+    total = len(db_data)
     active = 0
     expired = 0
 
     now = datetime.now()
 
-    for key, lic in db.items():
+    for lic in db_data.values():
         try:
             expiry = datetime.strptime(lic["expiry"], "%Y-%m-%d")
             if expiry >= now:
