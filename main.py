@@ -1,3 +1,6 @@
+import time
+
+import requests
 from fastapi import FastAPI
 from pydantic import BaseModel
 from datetime import datetime
@@ -6,10 +9,12 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 import os
 import json
+from fastapi import Request
+from firebase_admin import firestore
+
+API_SECRET = "zamin_api_2026"
 
 app = FastAPI()
-
-ADMIN_PASSWORD = "zamin123"  # change this
 
 # =========================
 # FIREBASE INIT
@@ -25,26 +30,6 @@ firebase_admin.initialize_app(cred)
 
 db = firestore.client()
 
-# =========================
-# FIREBASE FUNCTIONS
-# =========================
-
-def get_license(key):
-    doc = db.collection("licenses").document(key).get()
-    return doc.to_dict() if doc.exists else None
-
-
-def save_license(key, data):
-    db.collection("licenses").document(key).set(data)
-
-
-def delete_license_db(key):
-    db.collection("licenses").document(key).delete()
-
-
-def get_all_licenses():
-    docs = db.collection("licenses").stream()
-    return {doc.id: doc.to_dict() for doc in docs}
 
 # =========================
 # MODELS
@@ -57,124 +42,226 @@ class LicenseRequest(BaseModel):
 
 
 class AdminRequest(BaseModel):
-    password: str
-    key: str = None
-    expiry: str = None
+    key: str
+    expiry: str
+    distributor_id: str = None
+    max_devices: int = 1
+
 
 # =========================
 # VALIDATION API
 # =========================
 
 @app.post("/api/validate")
-def validate(data: LicenseRequest):
+def validate(data: LicenseRequest, request: Request):
 
-    lic = get_license(data.license_key)
+    # 🔐 API SECURITY
+    if request.headers.get("x-api-key") != API_SECRET:
+        return {"valid": False, "error": "unauthorized"}
 
-    if not lic:
-        return {"valid": False}
+    lic_ref = db.collection("license_keys").document(data.license_key)
+    lic_doc = lic_ref.get()
+
+    if not lic_doc.exists:
+        return {"valid": False, "message": "Invalid key"}
+
+    lic = lic_doc.to_dict()
+
+    if not lic.get("active", True):
+        return {"valid": False, "message": "License disabled"}
 
     # expiry check
-    if datetime.strptime(lic["expiry"], "%Y-%m-%d") < datetime.now():
-        return {"valid": False, "reason": "expired"}
+    try:
+        expiry_date = datetime.strptime(lic["expires_at"], "%Y-%m-%d")
+        if expiry_date < datetime.now():
+            return {"valid": False, "message": "Expired"}
+    except:
+        return {"valid": False, "message": "Invalid expiry format"}
 
-    # device lock
-    if lic.get("device_id") is None:
-        lic["device_id"] = data.device_id
-        lic["device_name"] = data.device_name
-        save_license(data.license_key, lic)
+    # check if device already exists
+    devices = db.collection("licensed_devices") \
+        .where("license_key", "==", data.license_key) \
+        .where("device_id", "==", data.device_id) \
+        .stream()
 
-    elif lic.get("device_id") != data.device_id:
+    device_list = list(devices)
+
+    if device_list:
+        # existing device → update heartbeat
+        doc = device_list[0]
+        doc.reference.update({
+            "last_seen": datetime.utcnow()
+        })
+
         return {
-            "valid": False,
-            "reason": "device_mismatch",
-            "device_name": lic.get("device_name", "Unknown")
+            "valid": True,
+            "expiry": lic["expires_at"]
         }
+
+    # NEW DEVICE → check limit safely
+    used = lic.get("used_devices", 0)
+    max_devices = lic.get("max_devices", 1)
+
+    if used >= max_devices:
+        return {"valid": False, "message": "Device limit reached"}
+
+    # register new device
+    db.collection("licensed_devices").add({
+        "device_id": data.device_id,
+        "license_key": data.license_key,
+        "distributor_id": lic.get("distributor_id"),
+        "device_label": data.device_name,
+        "last_seen": datetime.utcnow(),
+        "expires_at": lic["expires_at"],
+        "active": True,
+        "pro_override": False
+    })
+
+    # increment usage
+    lic_ref.update({
+        "used_devices": firestore.Increment(1)
+    })
 
     return {
         "valid": True,
-        "expiry": lic["expiry"]
+        "expiry": lic["expires_at"]
     }
 
-# =========================
-# ADMIN AUTH
-# =========================
 
-def check_admin(password):
-    return password == ADMIN_PASSWORD
+@app.post("/api/heartbeat")
+def heartbeat(data: LicenseRequest, request: Request):
 
-# =========================
-# ADMIN APIs
-# =========================
-
-@app.post("/admin/create")
-def create_license(req: AdminRequest):
-
-    if not check_admin(req.password):
+    # 🔐 API SECURITY
+    if request.headers.get("x-api-key") != API_SECRET:
         return {"error": "unauthorized"}
 
-    save_license(req.key, {
-        "expiry": req.expiry,
-        "device_id": None,
-        "device_name": None
+    devices = db.collection("licensed_devices") \
+        .where("device_id", "==", data.device_id) \
+        .stream()
+
+    for d in devices:
+        d.reference.update({
+            "last_seen": datetime.utcnow()
+        })
+
+    return {"status": "ok"}
+
+
+# =========================
+# ADMIN APIs (UPDATED)
+# =========================
+
+ADMIN_API_KEY = "zamin_admin_2026"
+
+
+def check_admin(request: Request):
+    return request.headers.get("x-admin-key") == ADMIN_API_KEY
+
+
+# ✅ CREATE LICENSE
+@app.post("/admin/create")
+def create_license(req: AdminRequest, request: Request):
+
+    if not check_admin(request):
+        return {"error": "unauthorized"}
+
+    db.collection("license_keys").document(req.key).set({
+        "key": req.key,
+        "distributor_id": req.distributor_id or "default",
+        "max_devices": req.max_devices or 1,
+        "used_devices": 0,
+        "expires_at": req.expiry,
+        "active": True,
+        "created_at": datetime.utcnow()
     })
 
     return {"status": "created"}
 
 
+# ✅ LIST LICENSES
 @app.get("/admin/list")
-def list_licenses(password: str):
+def list_licenses(request: Request):
 
-    if not check_admin(password):
+    if not check_admin(request):
         return {"error": "unauthorized"}
 
-    return get_all_licenses()
+    docs = db.collection("license_keys").stream()
+
+    result = []
+    for doc in docs:
+        data = doc.to_dict()
+        result.append(data)
+
+    return result
 
 
+# ✅ DELETE LICENSE
 @app.post("/admin/delete")
-def delete_license(req: AdminRequest):
+def delete_license(req: AdminRequest, request: Request):
 
-    if not check_admin(req.password):
+    if not check_admin(request):
         return {"error": "unauthorized"}
 
-    delete_license_db(req.key)
+    # delete license key
+    db.collection("license_keys").document(req.key).delete()
+
+    # delete all devices linked to it
+    devices = db.collection("licensed_devices") \
+        .where("license_key", "==", req.key) \
+        .stream()
+
+    for d in devices:
+        d.reference.delete()
 
     return {"status": "deleted"}
 
 
-@app.post("/admin/reset-device")
-def reset_device(req: AdminRequest):
+# ✅ RESET DEVICES (remove all devices for a license)
+@app.post("/admin/reset-devices")
+def reset_devices(req: AdminRequest, request: Request):
 
-    if not check_admin(req.password):
+    if not check_admin(request):
         return {"error": "unauthorized"}
 
-    lic = get_license(req.key)
+    devices = db.collection("licensed_devices") \
+        .where("license_key", "==", req.key) \
+        .stream()
 
-    if lic:
-        lic["device_id"] = None
-        lic["device_name"] = None
-        save_license(req.key, lic)
+    count = 0
+    for d in devices:
+        d.reference.delete()
+        count += 1
 
-    return {"status": "reset"}
+    # reset usage count
+    db.collection("license_keys").document(req.key).update({
+        "used_devices": 0
+    })
+
+    return {"status": "reset", "removed_devices": count}
 
 
+# ✅ STATS
 @app.get("/admin/stats")
-def get_stats(password: str):
+def get_stats(request: Request):
 
-    if not check_admin(password):
+    if not check_admin(request):
         return {"error": "unauthorized"}
 
-    db_data = get_all_licenses()
+    docs = db.collection("license_keys").stream()
 
-    total = len(db_data)
+    total = 0
     active = 0
     expired = 0
 
     now = datetime.now()
 
-    for lic in db_data.values():
+    for doc in docs:
+        total += 1
+        data = doc.to_dict()
+
         try:
-            expiry = datetime.strptime(lic["expiry"], "%Y-%m-%d")
-            if expiry >= now:
+            expiry = datetime.strptime(data["expires_at"], "%Y-%m-%d")
+            if expiry >= now and data.get("active", True):
                 active += 1
             else:
                 expired += 1
