@@ -276,7 +276,7 @@ def get_stats(request: Request):
 
 
 # =========================
-# ADMIN UI PANEL
+# ADMIN UI PANEL (FIXED)
 # =========================
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -399,7 +399,6 @@ def admin_panel():
 
         <div class="card">
             <h3>Create License</h3>
-            <input id="password" placeholder="Admin Password">
             <input id="key" placeholder="License Key">
             <input id="expiry" placeholder="YYYY-MM-DD">
             <button onclick="createLicense()">Create</button>
@@ -409,22 +408,18 @@ def admin_panel():
             <h3>All Licenses</h3>
             <button class="secondary" onclick="loadLicenses()">Refresh</button>
 
-            <table id="table">
-                <tr>
-                    <th>Key</th>
-                    <th>Expiry</th>
-                    <th>Device Name</th>
-                    <th>Actions</th>
-                </tr>
-            </table>
+            <table id="table"></table>
         </div>
 
         <script>
 
-        async function loadStats() {
-            const password = document.getElementById("password").value;
+        const ADMIN_KEY = "zamin_admin_2026";
 
-            const res = await fetch("/admin/stats?password=" + password);
+        async function loadStats() {
+            const res = await fetch("/admin/stats", {
+                headers: { "x-admin-key": ADMIN_KEY }
+            });
+
             const data = await res.json();
 
             document.getElementById("total").innerText = data.total || 0;
@@ -433,14 +428,21 @@ def admin_panel():
         }
 
         async function createLicense() {
-            const password = document.getElementById("password").value;
             const key = document.getElementById("key").value;
             const expiry = document.getElementById("expiry").value;
 
             await fetch("/admin/create", {
                 method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({password, key, expiry})
+                headers: {
+                    "Content-Type": "application/json",
+                    "x-admin-key": ADMIN_KEY
+                },
+                body: JSON.stringify({
+                    key: key,
+                    expiry: expiry,
+                    max_devices: 3,
+                    distributor_id: "default"
+                })
             });
 
             loadLicenses();
@@ -448,9 +450,10 @@ def admin_panel():
         }
 
         async function loadLicenses() {
-            const password = document.getElementById("password").value;
+            const res = await fetch("/admin/list", {
+                headers: { "x-admin-key": ADMIN_KEY }
+            });
 
-            const res = await fetch("/admin/list?password=" + password);
             const data = await res.json();
 
             const table = document.getElementById("table");
@@ -459,52 +462,59 @@ def admin_panel():
                 <tr>
                     <th>Key</th>
                     <th>Expiry</th>
-                    <th>Device</th>
+                    <th>Used</th>
+                    <th>Max</th>
                     <th>Actions</th>
                 </tr>
             `;
 
-            for (let key in data) {
-                const lic = data[key];
-
+            data.forEach(lic => {
                 table.innerHTML += `
                     <tr>
-                        <td>${key}</td>
-                        <td>${lic.expiry}</td>
-                        <td>${lic.device_name || "-"}</td>
+                        <td>${lic.key}</td>
+                        <td>${lic.expires_at}</td>
+                        <td>${lic.used_devices || 0}</td>
+                        <td>${lic.max_devices || 1}</td>
                         <td>
-                            <button class="danger" onclick="deleteLicense('${key}')">Delete</button>
-                            <button class="secondary" onclick="resetDevice('${key}')">Reset</button>
+                            <button class="danger" onclick="deleteLicense('${lic.key}')">Delete</button>
+                            <button class="secondary" onclick="resetDevices('${lic.key}')">Reset</button>
                         </td>
                     </tr>
                 `;
-            }
+            });
         }
 
         async function deleteLicense(key) {
-            const password = document.getElementById("password").value;
-
             await fetch("/admin/delete", {
                 method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({password, key})
+                headers: {
+                    "Content-Type": "application/json",
+                    "x-admin-key": ADMIN_KEY
+                },
+                body: JSON.stringify({ key })
             });
 
             loadLicenses();
             loadStats();
         }
 
-        async function resetDevice(key) {
-            const password = document.getElementById("password").value;
-
-            await fetch("/admin/reset-device", {
+        async function resetDevices(key) {
+            await fetch("/admin/reset-devices", {
                 method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({password, key})
+                headers: {
+                    "Content-Type": "application/json",
+                    "x-admin-key": ADMIN_KEY
+                },
+                body: JSON.stringify({ key })
             });
 
             loadLicenses();
         }
+
+        window.onload = () => {
+            loadStats();
+            loadLicenses();
+        };
 
         </script>
 
