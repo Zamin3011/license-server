@@ -76,6 +76,19 @@ def validate(data: LicenseRequest, request: Request):
         if dist_doc.exists:
             dist = dist_doc.to_dict()
 
+            # =========================
+            # DISTRIBUTOR DEVICE LIMIT CHECK
+            # =========================
+
+            devices_snap = db.collection("licensed_devices") \
+                .where("distributor_id", "==", dist_id) \
+                .stream()
+
+            total_devices = len(list(devices_snap))
+
+            if total_devices >= dist.get("max_devices", 0):
+                return {"valid": False, "message": "Distributor device limit reached"}
+
             if not dist.get("active", True):
                 return {"valid": False, "message": "Distributor disabled"}
 
@@ -83,18 +96,18 @@ def validate(data: LicenseRequest, request: Request):
             if dist.get("expires_at"):
                 try:
                     dist_expiry = datetime.strptime(dist["expires_at"], "%Y-%m-%d")
-                    if dist_expiry < datetime.now():
+                    if dist_expiry < datetime.utcnow():
                         return {"valid": False, "message": "Distributor expired"}
                 except:
                     pass
-                
+
     if not lic.get("active", True):
         return {"valid": False, "message": "License disabled"}
 
     # expiry check
     try:
         expiry_date = datetime.strptime(lic["expires_at"], "%Y-%m-%d")
-        if expiry_date < datetime.now():
+        if expiry_date < datetime.utcnow():
             return {"valid": False, "message": "Expired"}
     except:
         return {"valid": False, "message": "Invalid expiry format"}
@@ -108,8 +121,14 @@ def validate(data: LicenseRequest, request: Request):
     device_list = list(devices)
 
     if device_list:
-        # existing device → update heartbeat
         doc = device_list[0]
+        device_data = doc.to_dict()
+
+        # 🔥 NEW: check if device is disabled
+        if not device_data.get("active", True):
+            return {"valid": False, "message": "Device disabled"}
+
+        # existing device → update heartbeat
         doc.reference.update({
             "last_seen": datetime.utcnow()
         })
@@ -274,7 +293,7 @@ def get_stats(request: Request):
     active = 0
     expired = 0
 
-    now = datetime.now()
+    now = datetime.utcnow()
 
     for doc in docs:
         total += 1
