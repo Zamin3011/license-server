@@ -67,6 +67,27 @@ def validate(data: LicenseRequest, request: Request):
 
     lic = lic_doc.to_dict()
 
+    # 🔥 DISTRIBUTOR CHECK
+    dist_id = lic.get("distributor_id")
+
+    if dist_id:
+        dist_doc = db.collection("distributors").document(dist_id).get()
+
+        if dist_doc.exists:
+            dist = dist_doc.to_dict()
+
+            if not dist.get("active", True):
+                return {"valid": False, "message": "Distributor disabled"}
+
+            # optional expiry check
+            if dist.get("expires_at"):
+                try:
+                    dist_expiry = datetime.strptime(dist["expires_at"], "%Y-%m-%d")
+                    if dist_expiry < datetime.now():
+                        return {"valid": False, "message": "Distributor expired"}
+                except:
+                    pass
+                
     if not lic.get("active", True):
         return {"valid": False, "message": "License disabled"}
 
