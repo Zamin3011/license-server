@@ -1,7 +1,4 @@
-import time
-
-import requests
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from datetime import datetime
 from fastapi.responses import HTMLResponse
@@ -9,10 +6,11 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 import os
 import json
-from fastapi import Request
-from firebase_admin import firestore
 
-API_SECRET = "zamin_api_2026"
+API_SECRET = os.environ.get("API_SECRET")
+
+if not API_SECRET:
+    raise Exception("API_SECRET not set")
 
 app = FastAPI()
 
@@ -59,6 +57,10 @@ def validate(data: LicenseRequest, request: Request):
     if request.headers.get("x-api-key") != API_SECRET:
         return {"valid": False, "error": "unauthorized"}
 
+    # ❗ basic tamper protection
+    if len(data.license_key) < 10:
+        return {"valid": False, "message": "Invalid key format"}
+
     lic_ref = db.collection("license_keys").document(data.license_key)
     lic_doc = lic_ref.get()
 
@@ -70,43 +72,38 @@ def validate(data: LicenseRequest, request: Request):
     # 🔥 DISTRIBUTOR CHECK
     dist_id = lic.get("distributor_id")
 
+    dist = None
+
     if dist_id:
         dist_doc = db.collection("distributors").document(dist_id).get()
 
-        if dist_doc.exists:
-            dist = dist_doc.to_dict()
+        if not dist_doc.exists:
+            return {"valid": False, "message": "Distributor not found"}
 
-            # =========================
-            # DISTRIBUTOR DEVICE LIMIT CHECK
-            # =========================
+        dist = dist_doc.to_dict()
 
-            devices_snap = db.collection("licensed_devices") \
-                .where("distributor_id", "==", dist_id) \
-                .stream()
+        if not dist.get("active", True):
+            return {"valid": False, "message": "Distributor disabled"}
 
-            total_devices = len(list(devices_snap))
-
-            if total_devices >= dist.get("max_devices", 0):
-                return {"valid": False, "message": "Distributor device limit reached"}
-
-            if not dist.get("active", True):
-                return {"valid": False, "message": "Distributor disabled"}
-
-            # optional expiry check
-            if dist.get("expires_at"):
-                try:
-                    dist_expiry = datetime.strptime(dist["expires_at"], "%Y-%m-%d")
-                    if dist_expiry < datetime.utcnow():
-                        return {"valid": False, "message": "Distributor expired"}
-                except:
-                    pass
+        if dist.get("expires_at"):
+            try:
+                dist_expiry = datetime.strptime(dist["expires_at"], "%Y-%m-%d")
+                if dist_expiry < datetime.utcnow():
+                    return {"valid": False, "message": "Distributor expired"}
+            except:
+                pass
 
     if not lic.get("active", True):
         return {"valid": False, "message": "License disabled"}
 
     # expiry check
     try:
-        expiry_date = datetime.strptime(lic["expires_at"], "%Y-%m-%d")
+        expiry_str = lic.get("expires_at")
+
+        if not expiry_str:
+            return {"valid": False, "message": "No expiry set"}
+
+        expiry_date = datetime.strptime(expiry_str, "%Y-%m-%d")
         if expiry_date < datetime.utcnow():
             return {"valid": False, "message": "Expired"}
     except:
@@ -124,11 +121,14 @@ def validate(data: LicenseRequest, request: Request):
         doc = device_list[0]
         device_data = doc.to_dict()
 
-        # 🔥 NEW: check if device is disabled
+        # ❗ BLOCK inactive devices
         if not device_data.get("active", True):
             return {"valid": False, "message": "Device disabled"}
 
-        # existing device → update heartbeat
+        # ❗ ensure distributor consistency
+        if device_data.get("distributor_id") != lic.get("distributor_id"):
+            return {"valid": False, "message": "Invalid distributor mapping"}
+
         doc.reference.update({
             "last_seen": datetime.utcnow()
         })
@@ -138,12 +138,28 @@ def validate(data: LicenseRequest, request: Request):
             "expiry": lic["expires_at"]
         }
 
-    # NEW DEVICE → check limit safely
-    used = lic.get("used_devices", 0)
+    # 🔥 REAL DEVICE COUNT (NO CHEATING)
+    devices = db.collection("licensed_devices") \
+        .where("license_key", "==", data.license_key) \
+        .stream()
+
+    count = sum(1 for _ in devices)
+
     max_devices = lic.get("max_devices", 1)
 
-    if used >= max_devices:
+    if count >= max_devices:
         return {"valid": False, "message": "Device limit reached"}
+
+    # DISTRIBUTOR DEVICE LIMIT CHECK
+    if dist:
+        devices_snap = db.collection("licensed_devices") \
+            .where("distributor_id", "==", dist_id) \
+            .stream()
+
+        total_devices = sum(1 for _ in devices_snap)
+
+        if total_devices >= dist.get("max_devices", 999999):
+            return {"valid": False, "message": "Distributor device limit reached"}
 
     # register new device
     db.collection("licensed_devices").add({
@@ -152,14 +168,8 @@ def validate(data: LicenseRequest, request: Request):
         "distributor_id": lic.get("distributor_id"),
         "device_label": data.device_name,
         "last_seen": datetime.utcnow(),
-        "expires_at": lic["expires_at"],
         "active": True,
         "pro_override": False
-    })
-
-    # increment usage
-    lic_ref.update({
-        "used_devices": firestore.Increment(1)
     })
 
     return {
@@ -177,12 +187,19 @@ def heartbeat(data: LicenseRequest, request: Request):
 
     devices = db.collection("licensed_devices") \
         .where("device_id", "==", data.device_id) \
+        .where("license_key", "==", data.license_key) \
         .stream()
+
+    updated = False
 
     for d in devices:
         d.reference.update({
             "last_seen": datetime.utcnow()
         })
+        updated = True
+
+    if not updated:
+        return {"status": "device_not_found"}
 
     return {"status": "ok"}
 
@@ -191,8 +208,10 @@ def heartbeat(data: LicenseRequest, request: Request):
 # ADMIN APIs (UPDATED)
 # =========================
 
-ADMIN_API_KEY = "zamin_admin_2026"
+ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY")
 
+if not API_SECRET:
+    raise Exception("API_SECRET not set")
 
 def check_admin(request: Request):
     return request.headers.get("x-admin-key") == ADMIN_API_KEY
@@ -207,9 +226,8 @@ def create_license(req: AdminRequest, request: Request):
 
     db.collection("license_keys").document(req.key).set({
         "key": req.key,
-        "distributor_id": req.distributor_id or "default",
+        "distributor_id": req.distributor_id or None,
         "max_devices": req.max_devices or 1,
-        "used_devices": 0,
         "expires_at": req.expiry,
         "active": True,
         "created_at": datetime.utcnow()
@@ -271,11 +289,6 @@ def reset_devices(req: AdminRequest, request: Request):
     for d in devices:
         d.reference.delete()
         count += 1
-
-    # reset usage count
-    db.collection("license_keys").document(req.key).update({
-        "used_devices": 0
-    })
 
     return {"status": "reset", "removed_devices": count}
 
@@ -453,7 +466,7 @@ def admin_panel():
 
         <script>
 
-        const ADMIN_KEY = "zamin_admin_2026";
+        const ADMIN_KEY = prompt("Enter admin key");
 
         async function loadStats() {
             const res = await fetch("/admin/stats", {
